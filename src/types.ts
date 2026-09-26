@@ -1,6 +1,14 @@
 export type WorkflowStatus = 'draft' | 'review' | 'frozen';
 export type IssueLevel = 'error' | 'warning' | 'info';
-export type IssueType = 'duplicate' | 'missing-response' | 'unreachable-precondition' | 'stage-order' | 'orphan-stage';
+export type IssueType = 'duplicate' | 'missing-response' | 'unreachable-precondition' | 'stage-order' | 'orphan-stage' | 'release';
+
+export interface ItemRelease {
+  responsible: string;
+  recoveryStageId: string;
+  createdAt: string;
+  /** 放行登记时检查项内容的指纹，用于识别放行后内容是否被修改。 */
+  fingerprint: string;
+}
 
 export interface FlightStage {
   id: string;
@@ -18,6 +26,7 @@ export interface ChecklistItem {
   critical: boolean;
   preconditionIds: string[];
   abnormalProcedure: string;
+  release?: ItemRelease;
   updatedAt: string;
 }
 

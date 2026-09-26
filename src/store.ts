@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createInitialState } from './data';
-import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, WorkspaceState } from './types';
+import { assessRelease, releaseFingerprint } from './release';
+import { validateProject } from './validation';
+import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, ItemRelease, WorkspaceState } from './types';
 
 const STORAGE_KEY = 'sologsb-1030-workspace-v1';
 const clone = <T>(value: T): T => structuredClone(value);
 const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const now = () => new Date().toISOString();
+
+const hasBlockingIssues = (project: ChecklistProject) => validateProject(project).some((issue) => issue.level === 'error');
 
 function loadState(): WorkspaceState {
   try {
@@ -142,7 +146,50 @@ export function useChecklistStore() {
   const updateItem = useCallback((itemId: string, patch: Partial<ChecklistItem>) => {
     commit((project) => {
       const item = project.items.find((entry) => entry.id === itemId);
-      if (item) Object.assign(item, patch, { updatedAt: now() });
+      if (item) {
+        Object.assign(item, patch, { updatedAt: now() });
+        if (!item.critical) item.release = undefined;
+      }
+    });
+  }, [commit]);
+
+  const enableRelease = useCallback((itemId: string) => {
+    commit((project) => {
+      const item = project.items.find((entry) => entry.id === itemId);
+      if (!item || !item.critical) return;
+      const ordered = project.stages.slice().sort((a, b) => a.order - b.order);
+      const itemStage = ordered.find((stage) => stage.id === item.stageId);
+      const recovery = ordered.find((stage) => itemStage && stage.order > itemStage.order) ?? itemStage ?? ordered[0];
+      item.release = { responsible: '', recoveryStageId: recovery?.id ?? '', createdAt: now(), fingerprint: releaseFingerprint(item) };
+      item.updatedAt = now();
+    });
+  }, [commit]);
+
+  const updateRelease = useCallback((itemId: string, patch: Partial<Pick<ItemRelease, 'responsible' | 'recoveryStageId'>>) => {
+    commit((project) => {
+      const item = project.items.find((entry) => entry.id === itemId);
+      if (!item?.release) return;
+      Object.assign(item.release, patch);
+      item.release.fingerprint = releaseFingerprint(item);
+      item.updatedAt = now();
+    });
+  }, [commit]);
+
+  const confirmRelease = useCallback((itemId: string) => {
+    commit((project) => {
+      const item = project.items.find((entry) => entry.id === itemId);
+      if (!item?.release) return;
+      item.release.fingerprint = releaseFingerprint(item);
+      item.updatedAt = now();
+    });
+  }, [commit]);
+
+  const clearRelease = useCallback((itemId: string) => {
+    commit((project) => {
+      const item = project.items.find((entry) => entry.id === itemId);
+      if (!item) return;
+      item.release = undefined;
+      item.updatedAt = now();
     });
   }, [commit]);
 
@@ -184,6 +231,7 @@ export function useChecklistStore() {
 
   const submitForReview = useCallback(() => {
     directUpdate((project) => {
+      if (hasBlockingIssues(project)) return;
       project.status = 'review';
       project.reviewNote = '';
     });
@@ -191,6 +239,7 @@ export function useChecklistStore() {
 
   const freezeRevision = useCallback((note: string) => {
     directUpdate((project) => {
+      if (hasBlockingIssues(project)) return;
       const version = project.revision;
       const snapshot: ChecklistRevision = {
         id: uid('revision'),
@@ -213,6 +262,12 @@ export function useChecklistStore() {
       project.status = 'draft';
       project.reviewNote = '';
       project.updatedAt = now();
+      project.items.forEach((item) => {
+        const assessment = item.release ? assessRelease(project.stages, item) : null;
+        if (assessment && (assessment.stale || assessment.expired)) {
+          item.release = undefined;
+        }
+      });
     });
   }, [directUpdate]);
 
@@ -255,6 +310,10 @@ export function useChecklistStore() {
     deleteStage,
     addItem,
     updateItem,
+    enableRelease,
+    updateRelease,
+    confirmRelease,
+    clearRelease,
     deleteItem,
     reorderItem,
     nudgeItem,

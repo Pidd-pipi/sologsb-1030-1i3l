@@ -1,3 +1,4 @@
+import { releaseFingerprint } from './release';
 import type { ChecklistItem, ChecklistProject, FlightStage, WorkspaceState } from './types';
 
 const stages: FlightStage[] = [
@@ -49,6 +50,23 @@ const items: ChecklistItem[] = [
   item('item-landing-clear', 'stage-landing', 1, '着陆跑道', 'CLEAR', true, ['item-runway'], '跑道不安全时执行复飞。')
 ];
 
+// 夜间临时换机：襟翼构型暂缓核查，机长登记临时放行，责任人为机务，起飞后的爬升阶段恢复。
+const flaps = items.find((entry) => entry.id === 'item-flaps');
+if (flaps) {
+  flaps.release = {
+    responsible: '机务 张伟',
+    recoveryStageId: 'stage-climb',
+    createdAt: '2026-09-25T01:30:00.000Z',
+    fingerprint: releaseFingerprint(flaps)
+  };
+}
+
+const stripRelease = (entry: ChecklistItem): ChecklistItem => {
+  const copy = { ...entry };
+  delete copy.release;
+  return copy;
+};
+
 const project: ChecklistProject = {
   id: 'project-c172',
   name: 'C172 标准操作检查单',
@@ -67,7 +85,7 @@ const project: ChecklistProject = {
       createdAt: '2026-09-20T04:20:00.000Z',
       note: '训练飞行前发布版本',
       stages: structuredClone(stages),
-      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization').map((entry) => entry.id === 'item-flaps' ? { ...entry, response: 'CHECKED' } : entry))
+      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization').map((entry) => entry.id === 'item-flaps' ? { ...stripRelease(entry), response: 'CHECKED' } : stripRelease(entry)))
     },
     {
       id: 'revision-1',
@@ -76,7 +94,7 @@ const project: ChecklistProject = {
       createdAt: '2026-09-12T07:30:00.000Z',
       note: '初始基线',
       stages: structuredClone(stages.slice(0, 5)),
-      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization' && entry.id !== 'item-landing-clear'))
+      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization' && entry.id !== 'item-landing-clear').map((entry) => stripRelease(entry)))
     }
   ]
 };

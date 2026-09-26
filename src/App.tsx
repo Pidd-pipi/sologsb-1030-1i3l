@@ -22,6 +22,7 @@ import {
   Tooltip
 } from '@radix-ui/themes';
 import { buildVersionOptions, diffVersions } from './diff';
+import { assessRelease, type ReleaseAssessment } from './release';
 import { useChecklistStore } from './store';
 import type { ChecklistItem, ChecklistProject, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
 import { validateProject } from './validation';
@@ -40,6 +41,14 @@ const issueMeta: Record<IssueLevel, { color: 'red' | 'amber' | 'blue'; label: st
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character);
+}
+
+function releaseStatusText(assessment: ReleaseAssessment): string {
+  if (!assessment.hasResponsible) return '放行未生效：请填写责任人，否则缺少预期回应仍会阻断。';
+  if (assessment.stageMissing) return '放行已失效：恢复阶段已被删除。';
+  if (assessment.expired) return '放行已过期：检查项已到达恢复阶段，提交与冻结将被重新阻断。';
+  if (assessment.stale) return '当前有效；但放行后内容已修改，创建新修订时不会携带。';
+  return '放行有效：可在缺少预期回应时提交复核。';
 }
 
 function App() {
@@ -66,6 +75,8 @@ function App() {
   const errors = issues.filter((issue) => issue.level === 'error').length;
   const warnings = issues.filter((issue) => issue.level === 'warning').length;
   const selectedItem = project.items.find((item) => item.id === selectedItemId);
+  const selectedRelease = selectedItem?.release ? assessRelease(project.stages, selectedItem) : null;
+  const releasedItems = project.items.filter((item) => item.release);
   const versionOptions = useMemo(() => buildVersionOptions(project), [project]);
   const diffEntries = useMemo(() => diffVersions(project, leftVersion, rightVersion), [project, leftVersion, rightVersion]);
   const filteredStages = useMemo(() => {
@@ -157,9 +168,15 @@ function App() {
 
   function exportPrintableHtml() {
     const stageOrder = project.stages.slice().sort((a, b) => a.order - b.order);
+    const releaseHtml = (item: ChecklistItem) => {
+      if (!item.release) return '';
+      const assessment = assessRelease(project.stages, item);
+      const recoveryName = assessment?.recoveryStage?.name ?? '阶段已删除';
+      return `<div class="release">◈ 临时放行 · 责任人 ${escapeHtml(item.release.responsible.trim() || '未填写')} · 恢复阶段 ${escapeHtml(recoveryName)}${assessment && !assessment.valid ? '（已失效）' : ''}</div>`;
+    };
     const body = stageOrder.map((stage) => {
       const rows = project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).map((item) => `
-        <tr><td>${item.critical ? '<strong>◆</strong> ' : ''}${escapeHtml(item.challenge)}</td><td>${escapeHtml(item.response || '未填写')}</td><td>${escapeHtml(item.abnormalProcedure || '—')}</td></tr>
+        <tr><td>${item.critical ? '<strong>◆</strong> ' : ''}${escapeHtml(item.challenge)}${releaseHtml(item)}</td><td>${escapeHtml(item.response || (item.release ? '暂缓核查' : '未填写'))}</td><td>${escapeHtml(item.abnormalProcedure || '—')}</td></tr>
       `).join('');
       return `<section><h2>${escapeHtml(stage.name)}</h2><p>${escapeHtml(stage.description)}</p><table><thead><tr><th>挑战语</th><th>预期回应</th><th>异常处置</th></tr></thead><tbody>${rows || '<tr><td colspan="3">本阶段暂无项目</td></tr>'}</tbody></table></section>`;
     }).join('');
@@ -167,6 +184,7 @@ function App() {
       body{font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111;margin:36px}
       h1{margin:0 0 4px} .meta{color:#666;margin-bottom:28px} h2{border-bottom:2px solid #222;padding-bottom:5px;margin-top:26px}
       table{width:100%;border-collapse:collapse} th,td{border:1px solid #bbb;padding:7px;text-align:left;vertical-align:top} th{background:#eee}
+      .release{margin-top:3px;color:#8a6d00;font-size:11px;font-weight:700}
       @media print{body{margin:15mm}section{break-inside:avoid}}
     </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}</div>${body}</body></html>`;
     const url = URL.createObjectURL(new Blob([documentHtml], { type: 'text/html;charset=utf-8' }));
@@ -235,6 +253,7 @@ function App() {
           <Flex gap="2" align="center" wrap="wrap">
             <Badge color={statusMeta[project.status].color} size="2">r{project.revision} · {statusMeta[project.status].label}</Badge>
             <Text size="1" color="gray">{errors ? `${errors} 个阻断` : '无阻断问题'} · {warnings} 个警告</Text>
+            {releasedItems.length > 0 && <Badge color="violet" variant="soft">{releasedItems.length} 项临时放行</Badge>}
             {project.status === 'draft' && <Button color="amber" onClick={store.submitForReview} disabled={errors > 0}>提交复核</Button>}
             {project.status === 'review' && <Button color="green" onClick={() => setFreezeOpen(true)} disabled={errors > 0}>复核通过并冻结</Button>}
             {project.status === 'frozen' && <Button onClick={store.createRevision}>创建修订 r{project.revision + 1}</Button>}
@@ -317,6 +336,7 @@ function App() {
                         <div className="item-table">
                           {items.map((item) => {
                             const itemIssues = issues.filter((issue) => issue.itemId === item.id);
+                            const rowRelease = item.release ? assessRelease(project.stages, item) : null;
                             return (
                               <article
                                 key={item.id}
@@ -332,10 +352,11 @@ function App() {
                                   <Flex gap="2" align="center" wrap="wrap">
                                     <strong>{item.challenge || '未命名检查项'}</strong>
                                     {item.critical && <Badge color="red" size="1">关键</Badge>}
+                                    {item.release && <Badge color={rowRelease?.valid ? 'violet' : 'red'} size="1">放行{rowRelease?.valid ? '' : '失效'}</Badge>}
                                     {item.preconditionIds.length > 0 && <Badge color="blue" size="1">{item.preconditionIds.length} 前置</Badge>}
                                     {itemIssues.length > 0 && <Badge color={itemIssues.some((issue) => issue.level === 'error') ? 'red' : 'amber'} size="1">{itemIssues.length} 问题</Badge>}
                                   </Flex>
-                                  <span className={`response-preview ${!item.response ? 'missing' : ''}`}>{item.response || '缺少预期回应'}</span>
+                                  <span className={`response-preview ${!item.response && !rowRelease?.valid ? 'missing' : ''}`}>{item.response || (rowRelease?.valid ? '暂缓核查（临时放行）' : '缺少预期回应')}</span>
                                   {item.abnormalProcedure && <small>异常：{item.abnormalProcedure}</small>}
                                 </div>
                                 <div className="row-actions">
@@ -364,6 +385,36 @@ function App() {
                             <label><span>挑战语</span><TextField.Root value={selectedItem.challenge} disabled={project.status !== 'draft'} onChange={(event) => store.updateItem(selectedItem.id, { challenge: event.target.value })} /></label>
                             <label><span>预期回应</span><TextField.Root value={selectedItem.response} disabled={project.status !== 'draft'} onChange={(event) => store.updateItem(selectedItem.id, { response: event.target.value })} /></label>
                             <Flex justify="between" align="center"><Text size="2" weight="bold">关键标记</Text><Switch checked={selectedItem.critical} disabled={project.status !== 'draft'} onCheckedChange={(checked) => store.updateItem(selectedItem.id, { critical: checked })} /></Flex>
+                            {(selectedItem.critical || selectedItem.release) && (
+                              <div className="release-panel">
+                                <Flex justify="between" align="center">
+                                  <Text size="2" weight="bold">临时放行</Text>
+                                  <Switch
+                                    checked={!!selectedItem.release}
+                                    disabled={project.status !== 'draft' || !selectedItem.critical}
+                                    onCheckedChange={(checked) => (checked ? store.enableRelease(selectedItem.id) : store.clearRelease(selectedItem.id))}
+                                  />
+                                </Flex>
+                                {!selectedItem.critical && <Text size="1" color="red">仅关键检查项可登记临时放行，请关闭放行或将该项标记为关键。</Text>}
+                                {selectedItem.release && (
+                                  <>
+                                    <label><span>责任人</span><TextField.Root value={selectedItem.release.responsible} disabled={project.status !== 'draft'} placeholder="放行责任人，如 机务 张伟" onChange={(event) => store.updateRelease(selectedItem.id, { responsible: event.target.value })} /></label>
+                                    <label><span>恢复阶段</span>
+                                      <Select.Root value={selectedItem.release.recoveryStageId || undefined} disabled={project.status !== 'draft'} onValueChange={(value) => store.updateRelease(selectedItem.id, { recoveryStageId: value })}>
+                                        <Select.Trigger variant="soft" aria-label="恢复阶段" />
+                                        <Select.Content position="popper">{project.stages.slice().sort((a, b) => a.order - b.order).map((stage) => <Select.Item key={stage.id} value={stage.id}>{stage.name}</Select.Item>)}</Select.Content>
+                                      </Select.Root>
+                                    </label>
+                                    {selectedRelease && (
+                                      <Text size="1" color={!selectedRelease.valid ? 'red' : selectedRelease.stale ? 'amber' : 'green'}>{releaseStatusText(selectedRelease)}</Text>
+                                    )}
+                                    {selectedRelease?.stale && project.status === 'draft' && (
+                                      <Button size="1" variant="soft" color="amber" onClick={() => store.confirmRelease(selectedItem.id)}>按当前内容重新确认放行</Button>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
                             <label><span>异常处理</span><TextArea value={selectedItem.abnormalProcedure} disabled={project.status !== 'draft'} onChange={(event) => store.updateItem(selectedItem.id, { abnormalProcedure: event.target.value })} placeholder="异常条件、立即动作和后续步骤" /></label>
                             <div>
                               <Text size="2" weight="bold" mb="2" as="p">前置条件</Text>
@@ -459,6 +510,22 @@ function App() {
           <Dialog.Title>冻结 r{project.revision}</Dialog.Title>
           <Dialog.Description size="2" color="gray">冻结后不可直接编辑，只能通过创建新修订继续修改。</Dialog.Description>
           <TextArea mt="4" value={freezeNote} onChange={(event) => setFreezeNote(event.target.value)} placeholder="复核意见或版本说明" />
+          {releasedItems.length > 0 && (
+            <div className="freeze-release-list">
+              <Text size="2" weight="bold">冻结前确认 · {releasedItems.length} 项临时放行</Text>
+              {releasedItems.map((item) => {
+                const release = item.release;
+                if (!release) return null;
+                const assessment = assessRelease(project.stages, item);
+                return (
+                  <Flex key={item.id} justify="between" align="center" gap="3">
+                    <Text size="1">{item.challenge || '未命名'} · 责任人 {release.responsible.trim() || '未填写'} · 恢复阶段 {assessment?.recoveryStage?.name ?? '阶段已删除'}</Text>
+                    <Badge size="1" color={assessment?.valid ? 'green' : 'red'}>{assessment?.valid ? '有效' : '已失效'}</Badge>
+                  </Flex>
+                );
+              })}
+            </div>
+          )}
           <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button color="green" onClick={() => { store.freezeRevision(freezeNote); setFreezeOpen(false); setFreezeNote(''); }}>确认冻结</Button></Flex>
         </Dialog.Content>
       </Dialog.Root>
@@ -494,7 +561,11 @@ function PrintableChecklist({ project, compact = false }: { project: ChecklistPr
             <thead><tr><th style={{ width: '34%' }}>挑战语</th><th style={{ width: '25%' }}>预期回应</th><th>异常处理</th></tr></thead>
             <tbody>
               {project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).map((item) => (
-                <tr key={item.id}><td>{item.critical && <span className="critical-mark">◆</span>} {item.challenge}</td><td><strong>{item.response || '未填写'}</strong></td><td>{item.abnormalProcedure || '—'}</td></tr>
+                <tr key={item.id}>
+                  <td>{item.critical && <span className="critical-mark">◆</span>} {item.challenge}<ReleaseNote project={project} item={item} /></td>
+                  <td><strong>{item.response || (item.release ? '暂缓核查' : '未填写')}</strong></td>
+                  <td>{item.abnormalProcedure || '—'}</td>
+                </tr>
               ))}
               {!project.items.some((item) => item.stageId === stage.id) && <tr><td colSpan={3}>本阶段暂无检查项</td></tr>}
             </tbody>
@@ -502,6 +573,17 @@ function PrintableChecklist({ project, compact = false }: { project: ChecklistPr
         </section>
       ))}
     </article>
+  );
+}
+
+function ReleaseNote({ project, item }: { project: ChecklistProject; item: ChecklistItem }) {
+  const release = item.release;
+  if (!release) return null;
+  const assessment = assessRelease(project.stages, item);
+  return (
+    <div className="release-mark">
+      ◈ 临时放行 · 责任人 {release.responsible.trim() || '未填写'} · 恢复阶段 {assessment?.recoveryStage?.name ?? '阶段已删除'}{assessment && !assessment.valid ? '（已失效）' : ''}
+    </div>
   );
 }
 

@@ -1,3 +1,4 @@
+import { assessRelease } from './release';
 import type { ChecklistItem, ChecklistProject, ValidationIssue } from './types';
 
 const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en');
@@ -17,8 +18,37 @@ export function validateProject(project: ChecklistProject): ValidationIssue[] {
     if (!item.challenge.trim()) {
       add({ id: `${item.id}-empty-challenge`, type: 'missing-response', level: 'error', stageId: item.stageId, itemId: item.id, title: '检查项缺少挑战语', detail: '每项必须有可供机组读取的挑战语。' });
     }
+    const releaseAssessment = item.release ? assessRelease(project.stages, item) : null;
     if (!item.response.trim()) {
-      add({ id: `${item.id}-missing-response`, type: 'missing-response', level: 'error', stageId: item.stageId, itemId: item.id, title: '缺少预期回应', detail: `${item.challenge || '未命名检查项'} 没有填写机组应确认的回应。` });
+      if (releaseAssessment?.valid) {
+        add({
+          id: `${item.id}-release-cover`,
+          type: 'release',
+          level: 'info',
+          stageId: item.stageId,
+          itemId: item.id,
+          title: '关键项临时放行中',
+          detail: `${item.challenge || '未命名检查项'} 暂缓核查：责任人 ${releaseAssessment.release.responsible.trim()}，恢复阶段 ${releaseAssessment.recoveryStage?.name ?? '未知'}。冻结前放行失效（过期或责任人被清除）将重新阻断。`
+        });
+      } else {
+        add({ id: `${item.id}-missing-response`, type: 'missing-response', level: 'error', stageId: item.stageId, itemId: item.id, title: '缺少预期回应', detail: `${item.challenge || '未命名检查项'} 没有填写机组应确认的回应。` });
+      }
+    }
+    if (item.release && releaseAssessment) {
+      if (!item.critical) {
+        add({ id: `${item.id}-release-not-critical`, type: 'release', level: 'error', stageId: item.stageId, itemId: item.id, title: '普通检查项不能临时放行', detail: '仅关键检查项可以登记临时放行，请取消放行或将该检查项标记为关键项。' });
+      }
+      if (!releaseAssessment.hasResponsible) {
+        add({ id: `${item.id}-release-responsible`, type: 'release', level: 'error', stageId: item.stageId, itemId: item.id, title: '临时放行缺少责任人', detail: '责任人被清除后放行失效，缺少预期回应的检查项将重新阻断提交与冻结。' });
+      }
+      if (releaseAssessment.stageMissing) {
+        add({ id: `${item.id}-release-stage-missing`, type: 'release', level: 'error', stageId: item.stageId, itemId: item.id, title: '放行恢复阶段已删除', detail: '恢复阶段不存在，放行已过期，请重新指定恢复阶段或取消放行。' });
+      } else if (releaseAssessment.expired) {
+        add({ id: `${item.id}-release-expired`, type: 'release', level: 'error', stageId: item.stageId, itemId: item.id, title: '临时放行已过期', detail: `检查项已到达恢复阶段（${releaseAssessment.recoveryStage?.name ?? '未知'}），冻结前必须恢复核查或更新放行。` });
+      }
+      if (releaseAssessment.stale) {
+        add({ id: `${item.id}-release-stale`, type: 'release', level: 'warning', stageId: item.stageId, itemId: item.id, title: '放行后检查项内容已修改', detail: '该放行不会随新修订携带；如需延续放行，请在检查项详情中按当前内容重新确认。' });
+      }
     }
     item.preconditionIds.forEach((preconditionId) => {
       if (preconditionId === item.id) {

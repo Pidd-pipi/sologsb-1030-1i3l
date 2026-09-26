@@ -1,6 +1,14 @@
-import type { ChecklistItem, ChecklistProject, ChecklistRevision, DiffEntry, VersionOption } from './types';
+import type { ChecklistItem, ChecklistProject, ChecklistRevision, DiffEntry, FlightStage, VersionOption } from './types';
 
-const itemLabel = (item: ChecklistItem) => `${item.challenge || '未命名'} → ${item.response || '未填写'}`;
+const itemLabel = (item: ChecklistItem, stages: FlightStage[]): string => {
+  const parts = [`${item.challenge || '未命名'} → ${item.response || '未填写'}`];
+  if (item.critical) parts.push('[关键]');
+  if (item.release) {
+    const recovery = stages.find((stage) => stage.id === item.release!.recoveryStageId)?.name ?? '阶段已删除';
+    parts.push(`[放行:${item.release.responsible.trim() || '未填责任人'}→${recovery}]`);
+  }
+  return parts.join(' ');
+};
 
 export function buildVersionOptions(project: ChecklistProject): VersionOption[] {
   return [
@@ -23,16 +31,16 @@ export function diffVersions(project: ChecklistProject, leftId: string, rightId:
     const after = newItems.get(id);
     const stageName = (item?: ChecklistItem) => project.stages.find((stage) => stage.id === item?.stageId)?.name ?? '未分配阶段';
     if (!before && after) {
-      entries.push({ type: 'added', key: id, stage: stageName(after), before: '—', after: itemLabel(after) });
+      entries.push({ type: 'added', key: id, stage: stageName(after), before: '—', after: itemLabel(after, right.stages) });
     } else if (before && !after) {
-      entries.push({ type: 'removed', key: id, stage: stageName(before), before: itemLabel(before), after: '—' });
+      entries.push({ type: 'removed', key: id, stage: stageName(before), before: itemLabel(before, left.stages), after: '—' });
     } else if (before && after && JSON.stringify({ ...before, updatedAt: '' }) !== JSON.stringify({ ...after, updatedAt: '' })) {
       entries.push({
         type: 'changed',
         key: id,
         stage: stageName(after),
-        before: `${itemLabel(before)}${before.critical ? ' [关键]' : ''}`,
-        after: `${itemLabel(after)}${after.critical ? ' [关键]' : ''}`
+        before: itemLabel(before, left.stages),
+        after: itemLabel(after, right.stages)
       });
     }
   }
