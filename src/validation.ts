@@ -1,6 +1,15 @@
+import { deferralRecoverStageName, inspectDeferral, isDeferralActive } from './deferral';
+import type { DeferralProblem } from './deferral';
 import type { ChecklistItem, ChecklistProject, ValidationIssue } from './types';
 
 const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en');
+
+const deferralProblemCopy: Record<DeferralProblem, { title: string; detail: string }> = {
+  'not-critical': { title: '普通检查项不能使用放行', detail: '临时放行仅适用于关键检查项，请移除放行或恢复关键标记。' },
+  'no-owner': { title: '临时放行缺少责任人', detail: '责任人被清除后放行立即失效，缺少预期回应会重新阻断提交复核与冻结。' },
+  'stage-missing': { title: '临时放行已过期', detail: '恢复阶段未设置或已被删除，放行失效，请补做检查项或重新选择恢复阶段。' },
+  'stage-passed': { title: '临时放行已过期', detail: '恢复阶段已到达或排在检查项所在阶段之前，放行失效，请补做检查项后再发布。' }
+};
 
 export function validateProject(project: ChecklistProject): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
@@ -18,7 +27,26 @@ export function validateProject(project: ChecklistProject): ValidationIssue[] {
       add({ id: `${item.id}-empty-challenge`, type: 'missing-response', level: 'error', stageId: item.stageId, itemId: item.id, title: '检查项缺少挑战语', detail: '每项必须有可供机组读取的挑战语。' });
     }
     if (!item.response.trim()) {
-      add({ id: `${item.id}-missing-response`, type: 'missing-response', level: 'error', stageId: item.stageId, itemId: item.id, title: '缺少预期回应', detail: `${item.challenge || '未命名检查项'} 没有填写机组应确认的回应。` });
+      if (isDeferralActive(item, project.stages)) {
+        add({
+          id: `${item.id}-deferred-response`,
+          type: 'deferral',
+          level: 'info',
+          stageId: item.stageId,
+          itemId: item.id,
+          title: '关键项临时放行生效中',
+          detail: `责任人 ${item.deferral?.owner.trim()}，须在「${deferralRecoverStageName(item, project.stages)}」阶段前恢复；冻结前放行必须保持有效。`
+        });
+      } else {
+        add({ id: `${item.id}-missing-response`, type: 'missing-response', level: 'error', stageId: item.stageId, itemId: item.id, title: '缺少预期回应', detail: `${item.challenge || '未命名检查项'} 没有填写机组应确认的回应；关键检查项可在责任人与恢复阶段齐备时临时放行。` });
+      }
+    }
+    if (item.deferral) {
+      const { valid, problem } = inspectDeferral(item, project.stages);
+      if (!valid && problem) {
+        const copy = deferralProblemCopy[problem];
+        add({ id: `${item.id}-deferral-${problem}`, type: 'deferral', level: 'error', stageId: item.stageId, itemId: item.id, title: copy.title, detail: copy.detail });
+      }
     }
     item.preconditionIds.forEach((preconditionId) => {
       if (preconditionId === item.id) {

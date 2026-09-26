@@ -22,6 +22,7 @@ import {
   Tooltip
 } from '@radix-ui/themes';
 import { buildVersionOptions, diffVersions } from './diff';
+import { deferralRecoverStageName, deferralSummary, inspectDeferral, isDeferralActive } from './deferral';
 import { useChecklistStore } from './store';
 import type { ChecklistItem, ChecklistProject, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
 import { validateProject } from './validation';
@@ -66,6 +67,8 @@ function App() {
   const errors = issues.filter((issue) => issue.level === 'error').length;
   const warnings = issues.filter((issue) => issue.level === 'warning').length;
   const selectedItem = project.items.find((item) => item.id === selectedItemId);
+  const selectedDeferral = selectedItem?.deferral ? inspectDeferral(selectedItem, project.stages) : null;
+  const deferredItems = project.items.filter((item) => item.deferral);
   const versionOptions = useMemo(() => buildVersionOptions(project), [project]);
   const diffEntries = useMemo(() => diffVersions(project, leftVersion, rightVersion), [project, leftVersion, rightVersion]);
   const filteredStages = useMemo(() => {
@@ -77,7 +80,7 @@ function App() {
         stage,
         items: project.items
           .filter((item) => item.stageId === stage.id)
-          .filter((item) => !query || [stage.name, stage.description, item.challenge, item.response, item.abnormalProcedure].some((value) => value.toLocaleLowerCase('zh-CN').includes(query)))
+          .filter((item) => !query || [stage.name, stage.description, item.challenge, item.response, item.abnormalProcedure, item.deferral?.owner ?? ''].some((value) => value.toLocaleLowerCase('zh-CN').includes(query)))
           .sort((a, b) => a.order - b.order)
       }))
       .filter((group) => !query || group.items.length > 0 || group.stage.name.toLocaleLowerCase('zh-CN').includes(query));
@@ -158,15 +161,23 @@ function App() {
   function exportPrintableHtml() {
     const stageOrder = project.stages.slice().sort((a, b) => a.order - b.order);
     const body = stageOrder.map((stage) => {
-      const rows = project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).map((item) => `
-        <tr><td>${item.critical ? '<strong>◆</strong> ' : ''}${escapeHtml(item.challenge)}</td><td>${escapeHtml(item.response || '未填写')}</td><td>${escapeHtml(item.abnormalProcedure || '—')}</td></tr>
-      `).join('');
+      const rows = project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).map((item) => {
+        const deferralActive = isDeferralActive(item, project.stages);
+        const deferralLine = item.deferral
+          ? `<div class="deferral${deferralActive ? '' : ' expired'}">⚠ ${escapeHtml(deferralSummary(item, project.stages))}${deferralActive ? '' : '（已失效）'}</div>`
+          : '';
+        const responseText = item.response || (item.deferral && deferralActive ? '未填写 · 已放行' : '未填写');
+        return `
+        <tr><td>${item.critical ? '<strong>◆</strong> ' : ''}${escapeHtml(item.challenge)}${deferralLine}</td><td>${escapeHtml(responseText)}</td><td>${escapeHtml(item.abnormalProcedure || '—')}</td></tr>
+      `;
+      }).join('');
       return `<section><h2>${escapeHtml(stage.name)}</h2><p>${escapeHtml(stage.description)}</p><table><thead><tr><th>挑战语</th><th>预期回应</th><th>异常处置</th></tr></thead><tbody>${rows || '<tr><td colspan="3">本阶段暂无项目</td></tr>'}</tbody></table></section>`;
     }).join('');
     const documentHtml = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(project.name)}</title><style>
       body{font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111;margin:36px}
       h1{margin:0 0 4px} .meta{color:#666;margin-bottom:28px} h2{border-bottom:2px solid #222;padding-bottom:5px;margin-top:26px}
       table{width:100%;border-collapse:collapse} th,td{border:1px solid #bbb;padding:7px;text-align:left;vertical-align:top} th{background:#eee}
+      .deferral{margin-top:4px;font-size:11px;color:#8a5a00}.deferral.expired{color:#c00000}
       @media print{body{margin:15mm}section{break-inside:avoid}}
     </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}</div>${body}</body></html>`;
     const url = URL.createObjectURL(new Blob([documentHtml], { type: 'text/html;charset=utf-8' }));
@@ -332,6 +343,7 @@ function App() {
                                   <Flex gap="2" align="center" wrap="wrap">
                                     <strong>{item.challenge || '未命名检查项'}</strong>
                                     {item.critical && <Badge color="red" size="1">关键</Badge>}
+                                    {item.deferral && <Badge color={isDeferralActive(item, project.stages) ? 'amber' : 'red'} size="1">放行{item.deferral.owner.trim() ? `·${item.deferral.owner.trim()}` : ''}</Badge>}
                                     {item.preconditionIds.length > 0 && <Badge color="blue" size="1">{item.preconditionIds.length} 前置</Badge>}
                                     {itemIssues.length > 0 && <Badge color={itemIssues.some((issue) => issue.level === 'error') ? 'red' : 'amber'} size="1">{itemIssues.length} 问题</Badge>}
                                   </Flex>
@@ -364,6 +376,59 @@ function App() {
                             <label><span>挑战语</span><TextField.Root value={selectedItem.challenge} disabled={project.status !== 'draft'} onChange={(event) => store.updateItem(selectedItem.id, { challenge: event.target.value })} /></label>
                             <label><span>预期回应</span><TextField.Root value={selectedItem.response} disabled={project.status !== 'draft'} onChange={(event) => store.updateItem(selectedItem.id, { response: event.target.value })} /></label>
                             <Flex justify="between" align="center"><Text size="2" weight="bold">关键标记</Text><Switch checked={selectedItem.critical} disabled={project.status !== 'draft'} onCheckedChange={(checked) => store.updateItem(selectedItem.id, { critical: checked })} /></Flex>
+                            <div className="deferral-editor">
+                              <Flex justify="between" align="center">
+                                <Text size="2" weight="bold">临时放行</Text>
+                                <Switch
+                                  checked={!!selectedItem.deferral}
+                                  disabled={project.status !== 'draft' || !selectedItem.critical}
+                                  onCheckedChange={(checked) => {
+                                    if (!checked) {
+                                      store.setDeferral(selectedItem.id, null);
+                                      return;
+                                    }
+                                    const itemStage = project.stages.find((stage) => stage.id === selectedItem.stageId);
+                                    const laterStage = project.stages.filter((stage) => itemStage && stage.order > itemStage.order).sort((a, b) => a.order - b.order)[0];
+                                    store.setDeferral(selectedItem.id, { owner: '', recoverByStageId: laterStage?.id ?? '' });
+                                  }}
+                                />
+                              </Flex>
+                              {!selectedItem.critical && <Text size="1" color="gray">仅关键检查项可设置临时放行，普通检查项不能使用。</Text>}
+                              {!selectedItem.critical && selectedItem.deferral && (
+                                <Button size="1" color="red" variant="soft" disabled={project.status !== 'draft'} onClick={() => store.setDeferral(selectedItem.id, null)}>移除遗留放行</Button>
+                              )}
+                              {selectedItem.critical && selectedItem.deferral && (
+                                <>
+                                  <label>
+                                    <span>责任人</span>
+                                    <TextField.Root
+                                      value={selectedItem.deferral.owner}
+                                      disabled={project.status !== 'draft'}
+                                      placeholder="填写放行责任人，如 机长 张三"
+                                      onChange={(event) => store.setDeferral(selectedItem.id, { owner: event.target.value, recoverByStageId: selectedItem.deferral?.recoverByStageId ?? '' })}
+                                    />
+                                  </label>
+                                  <label>
+                                    <span>恢复阶段（须晚于本项所在阶段）</span>
+                                    <Select.Root
+                                      value={selectedItem.deferral.recoverByStageId || undefined}
+                                      disabled={project.status !== 'draft'}
+                                      onValueChange={(value) => store.setDeferral(selectedItem.id, { owner: selectedItem.deferral?.owner ?? '', recoverByStageId: value })}
+                                    >
+                                      <Select.Trigger variant="soft" placeholder="选择恢复阶段" />
+                                      <Select.Content position="popper">
+                                        {project.stages.slice().sort((a, b) => a.order - b.order).map((stage) => <Select.Item key={stage.id} value={stage.id}>{stage.name}</Select.Item>)}
+                                      </Select.Content>
+                                    </Select.Root>
+                                  </label>
+                                  <Text size="1" color={selectedDeferral?.valid ? 'amber' : 'red'}>
+                                    {selectedDeferral?.valid
+                                      ? `放行有效：缺少预期回应也可提交复核；冻结前必须保持有效，新修订仅在内容未变且未到「${deferralRecoverStageName(selectedItem, project.stages)}」时沿用。`
+                                      : '放行已失效：请补齐责任人并选择本项阶段之后的恢复阶段，否则缺少预期回应将重新阻断提交与冻结。'}
+                                  </Text>
+                                </>
+                              )}
+                            </div>
                             <label><span>异常处理</span><TextArea value={selectedItem.abnormalProcedure} disabled={project.status !== 'draft'} onChange={(event) => store.updateItem(selectedItem.id, { abnormalProcedure: event.target.value })} placeholder="异常条件、立即动作和后续步骤" /></label>
                             <div>
                               <Text size="2" weight="bold" mb="2" as="p">前置条件</Text>
@@ -458,6 +523,13 @@ function App() {
         <Dialog.Content maxWidth="520px">
           <Dialog.Title>冻结 r{project.revision}</Dialog.Title>
           <Dialog.Description size="2" color="gray">冻结后不可直接编辑，只能通过创建新修订继续修改。</Dialog.Description>
+          {deferredItems.length > 0 && (
+            <Callout.Root color="amber" mt="3">
+              <Callout.Text>
+                本版本包含 {deferredItems.length} 条临时放行（{deferredItems.map((item) => item.challenge || '未命名').join('、')}）。冻结前会再次确认放行仍然有效；创建新修订时只沿用内容未变且尚未到恢复阶段的放行。
+              </Callout.Text>
+            </Callout.Root>
+          )}
           <TextArea mt="4" value={freezeNote} onChange={(event) => setFreezeNote(event.target.value)} placeholder="复核意见或版本说明" />
           <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button color="green" onClick={() => { store.freezeRevision(freezeNote); setFreezeOpen(false); setFreezeNote(''); }}>确认冻结</Button></Flex>
         </Dialog.Content>
@@ -494,7 +566,18 @@ function PrintableChecklist({ project, compact = false }: { project: ChecklistPr
             <thead><tr><th style={{ width: '34%' }}>挑战语</th><th style={{ width: '25%' }}>预期回应</th><th>异常处理</th></tr></thead>
             <tbody>
               {project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).map((item) => (
-                <tr key={item.id}><td>{item.critical && <span className="critical-mark">◆</span>} {item.challenge}</td><td><strong>{item.response || '未填写'}</strong></td><td>{item.abnormalProcedure || '—'}</td></tr>
+                <tr key={item.id}>
+                  <td>
+                    {item.critical && <span className="critical-mark">◆</span>} {item.challenge}
+                    {item.deferral && (
+                      <div className={`deferral-note${isDeferralActive(item, project.stages) ? '' : ' expired'}`}>
+                        ⚠ {deferralSummary(item, project.stages)}{isDeferralActive(item, project.stages) ? '' : '（已失效）'}
+                      </div>
+                    )}
+                  </td>
+                  <td><strong>{item.response || (item.deferral && isDeferralActive(item, project.stages) ? '未填写 · 已放行' : '未填写')}</strong></td>
+                  <td>{item.abnormalProcedure || '—'}</td>
+                </tr>
               ))}
               {!project.items.some((item) => item.stageId === stage.id) && <tr><td colSpan={3}>本阶段暂无检查项</td></tr>}
             </tbody>

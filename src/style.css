@@ -114,6 +114,11 @@ kbd { border: 1px solid var(--gray-a7); border-bottom-width: 2px; border-radius:
 .print-sheet th { background: var(--gray-a3); font-size: 11px; }
 .print-sheet td:nth-child(2) { font-family: ui-monospace, monospace; font-weight: 750; }
 .critical-mark { color: var(--red-9); margin-right: 4px; }
+.deferral-note { margin-top: 4px; color: var(--amber-11); font-size: 10px; font-weight: 600; }
+.deferral-note.expired { color: var(--red-11); }
+.deferral-editor { display: grid; gap: 10px; padding: 11px; border: 1px dashed var(--amber-a7); border-radius: 10px; background: var(--amber-a2); }
+.deferral-editor label { display: grid; gap: 6px; }
+.deferral-editor label > span { font-size: 12px; font-weight: 700; }
 .preview-dialog { max-height: 88vh; }
 .dialog-scroll { max-height: 65vh; margin-top: 16px; overflow: auto; border-radius: 12px; background: var(--gray-3); padding: 10px; }
 .print-sheet.compact { box-shadow: none; }

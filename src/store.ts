@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createInitialState } from './data';
+import { deferralContentHash, inspectDeferral } from './deferral';
 import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, WorkspaceState } from './types';
 
 const STORAGE_KEY = 'sologsb-1030-workspace-v1';
@@ -142,7 +143,31 @@ export function useChecklistStore() {
   const updateItem = useCallback((itemId: string, patch: Partial<ChecklistItem>) => {
     commit((project) => {
       const item = project.items.find((entry) => entry.id === itemId);
-      if (item) Object.assign(item, patch, { updatedAt: now() });
+      if (item) {
+        Object.assign(item, patch, { updatedAt: now() });
+        // 普通检查项不能使用放行：取消关键标记时自动移除已有的临时放行。
+        if (patch.critical === false) item.deferral = null;
+      }
+    });
+  }, [commit]);
+
+  const setDeferral = useCallback((itemId: string, value: { owner: string; recoverByStageId: string } | null) => {
+    commit((project) => {
+      const item = project.items.find((entry) => entry.id === itemId);
+      if (!item) return;
+      if (!value) {
+        item.deferral = null;
+        item.updatedAt = now();
+        return;
+      }
+      if (!item.critical) return;
+      item.deferral = {
+        owner: value.owner,
+        recoverByStageId: value.recoverByStageId,
+        createdAt: item.deferral?.createdAt ?? now(),
+        contentHash: item.deferral?.contentHash ?? deferralContentHash(item)
+      };
+      item.updatedAt = now();
     });
   }, [commit]);
 
@@ -213,6 +238,13 @@ export function useChecklistStore() {
       project.status = 'draft';
       project.reviewNote = '';
       project.updatedAt = now();
+      // 新修订只沿用内容自放行建立以来没有变化、且恢复阶段尚未到达的放行。
+      project.items.forEach((item) => {
+        if (!item.deferral) return;
+        const stillValid = inspectDeferral(item, project.stages).valid;
+        const contentUnchanged = deferralContentHash(item) === item.deferral.contentHash;
+        if (!stillValid || !contentUnchanged) item.deferral = null;
+      });
     });
   }, [directUpdate]);
 
@@ -255,6 +287,7 @@ export function useChecklistStore() {
     deleteStage,
     addItem,
     updateItem,
+    setDeferral,
     deleteItem,
     reorderItem,
     nudgeItem,

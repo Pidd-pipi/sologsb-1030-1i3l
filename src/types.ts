@@ -1,6 +1,13 @@
 export type WorkflowStatus = 'draft' | 'review' | 'frozen';
 export type IssueLevel = 'error' | 'warning' | 'info';
-export type IssueType = 'duplicate' | 'missing-response' | 'unreachable-precondition' | 'stage-order' | 'orphan-stage';
+export type IssueType = 'duplicate' | 'missing-response' | 'unreachable-precondition' | 'stage-order' | 'orphan-stage' | 'deferral';
+
+export interface ItemDeferral {
+  owner: string;
+  recoverByStageId: string;
+  createdAt: string;
+  contentHash: string;
+}
 
 export interface FlightStage {
   id: string;
@@ -18,6 +25,7 @@ export interface ChecklistItem {
   critical: boolean;
   preconditionIds: string[];
   abnormalProcedure: string;
+  deferral?: ItemDeferral | null;
   updatedAt: string;
 }
 
